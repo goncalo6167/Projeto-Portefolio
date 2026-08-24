@@ -1,0 +1,29 @@
+# --- Dados brutos pesados e reproduziveis ---------------------------------
+# O HTML das paginas (~96 MB) e a cache dos detalhes voltam a ser gerados
+# correndo os scrapers. Nao vale a pena carrega-los no historico.
+data/raw/*.html
+data/raw/*.jsonl
+
+# Os CSVs ficam versionados de proposito: sao pequenos (~6 MB) e permitem a
+# quem clona o repositorio correr os notebooks sem esperar pelo scraping.
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- Jupyter --------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- Editores e sistema ---------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# --- Segredos -------------------------------------------------------------
+# Se algum dia usares chaves de API, poe-nas num .env — nunca no codigo.
+.env
