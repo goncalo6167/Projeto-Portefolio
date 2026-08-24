@@ -1,11 +1,15 @@
 # --- Dados brutos pesados e reproduziveis ---------------------------------
 # O HTML das paginas (~96 MB) e a cache dos detalhes voltam a ser gerados
 # correndo os scrapers. Nao vale a pena carrega-los no historico.
-data/raw/*.html
+data/raw/html/
 data/raw/*.jsonl
 
-# Os CSVs ficam versionados de proposito: sao pequenos (~6 MB) e permitem a
-# quem clona o repositorio correr os notebooks sem esperar pelo scraping.
+# Etapas intermedias do pipeline: reproduziveis a partir do raw e quase
+# identicas entre si. So o ficheiro final da cadeia fica versionado, para
+# quem clona o repositorio poder correr os notebooks sem esperar 1h de
+# scraping.
+data/interim/anuncios_listagem.csv
+data/interim/anuncios_detalhe.csv
 
 # --- Python ---------------------------------------------------------------
 __pycache__/

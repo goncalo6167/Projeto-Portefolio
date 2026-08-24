@@ -15,12 +15,13 @@ Vantagens face à abordagem por seletores CSS:
   - `createdAtFirst` dá a data real da 1ª publicação      -> tempo em mercado
 
 COMO USAR:
-    python src/scraping/imovirtual_scraper.py                 # as 5 freguesias
-    python src/scraping/imovirtual_scraper.py --pesquisa coimbra_concelho
-    python src/scraping/imovirtual_scraper.py --offline       # reprocessa o HTML em disco
+    python -m src.scraping.imovirtual_listagens              # 5 freguesias x 2 tipos
+    python -m src.scraping.imovirtual_listagens --pesquisa moradia_coimbra_centro
+    python -m src.scraping.imovirtual_listagens --offline    # reprocessa o HTML em disco
 
 O modo --offline não faz um único pedido: reprocessa o HTML já guardado em
-data/raw/. Serve para validar alterações ao parser sem voltar a incomodar o site.
+data/raw/html/. Serve para validar alterações ao parser sem voltar a incomodar
+o site.
 """
 
 from __future__ import annotations
@@ -35,27 +36,23 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from src.config import FREGUESIAS, HTML, INTERIM
+
 # --- Configuração ---------------------------------------------------------
 
-BASE = "https://www.imovirtual.com/pt/resultados/comprar/apartamento/coimbra/coimbra"
+BASE = "https://www.imovirtual.com/pt/resultados/comprar"
+
+# O Imovirtual separa apartamentos de moradias em pesquisas distintas. Ambos
+# entram no âmbito; o campo `estate` do JSON diz depois qual é qual por anúncio.
+TIPOS = ("apartamento", "moradia")
 
 PESQUISAS = {
-    "santo_antonio_olivais": f"{BASE}/santo-antonio-dos-olivais",
-    "eiras_sao_paulo_frades": f"{BASE}/eiras-e-sao-paulo-de-frades",
-    "coimbra_centro": f"{BASE}/se-nova-santa-cruz-almedina-e-sao-bartolomeu",
-    "santa_clara_castelo_viegas": f"{BASE}/santa-clara-e-castelo-viegas",
-    "sao_martinho_bispo": f"{BASE}/sao-martinho-do-bispo-e-ribeira-de-frades",
-    # Concelho inteiro (18 freguesias) — uma só pesquisa, sem freguesias a faltar.
-    "coimbra_concelho": BASE,
+    f"{tipo}_{nome}": f"{BASE}/{tipo}/coimbra/coimbra/{slug}"
+    for tipo in TIPOS
+    for nome, slug in FREGUESIAS.items()
 }
 
-PESQUISAS_POR_OMISSAO = [
-    "santo_antonio_olivais",
-    "eiras_sao_paulo_frades",
-    "coimbra_centro",
-    "santa_clara_castelo_viegas",
-    "sao_martinho_bispo",
-]
+PESQUISAS_POR_OMISSAO = list(PESQUISAS)
 
 HEADERS = {
     "User-Agent": (
@@ -65,7 +62,6 @@ HEADERS = {
     "Accept-Language": "pt-PT,pt;q=0.9",
 }
 
-RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 
 LIMITE_PAGINAS = 100           # travão de segurança, nunca deve ser atingido
 PAUSA_MIN, PAUSA_MAX = 2, 5    # segundos entre pedidos
@@ -88,13 +84,14 @@ FLOOR_PARA_NUMERO = {
     "NINTH": 9, "TENTH": 10,
 }
 
-# Padrões que denunciam um anúncio que não é um apartamento, apesar de o
-# anunciante o ter categorizado como "FLAT". Ver nota em `marcar_suspeito`.
-PADRAO_NAO_APARTAMENTO = re.compile(
-    r"\b(?:pr[ée]dio|terreno|lote|armaz[ée]m|moradia|quintinha|loja|"
-    r"escrit[óo]rio|garagem\s+para\s+venda)\b",
+# Não é habitação, seja qual for a categoria em que foi listado.
+PADRAO_NAO_HABITACAO = re.compile(
+    r"\b(?:pr[ée]dio|terreno|lote|armaz[ée]m|loja|escrit[óo]rio|"
+    r"garagem\s+para\s+venda)\b",
     re.IGNORECASE,
 )
+# Só é contraditório se o anúncio estiver listado como apartamento.
+PADRAO_MORADIA = re.compile(r"\b(?:moradia|vivenda|quintinha)\b", re.IGNORECASE)
 PADRAO_ARRENDAMENTO = re.compile(r"\b(?:arrendar|arrendamento|aluguer)\b", re.IGNORECASE)
 
 # O site usa "1999-02-29" como sentinela de data desconhecida. Nem sequer é uma
@@ -211,21 +208,31 @@ def normalizar_anuncio(item: dict, pesquisa: str) -> dict:
 
 def marcar_suspeito(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Marca anúncios que provavelmente não são apartamentos.
+    Marca anúncios cujo título contradiz a categoria em que foram listados.
 
-    Nota importante: NÃO chega filtrar por `estate == "FLAT"`. Os anunciantes
-    categorizam prédios inteiros e terrenos como "FLAT" — 1301 dos 1302
-    anúncios recolhidos vêm com esse valor, incluindo "Terreno para construção"
-    e "Prédio para reconstrução". O sinal útil é a combinação do título com
-    `roomsNumber == "MORE"` (T9+) e área anormal.
+    O `estate` do JSON separa bem apartamentos (FLAT) de moradias (HOUSE) —
+    as pesquisas de moradia devolveram HOUSE em 246 de 246. O que o `estate`
+    NÃO apanha é o ruído dentro de cada categoria: prédios inteiros, terrenos
+    e armazéns aparecem listados como FLAT porque foi assim que o anunciante
+    os categorizou, e o site limita-se a propagar o erro. Verificámos um a um:
+    "Terreno para construção" e "Prédio com 8,7% Yield" vêm ambos como FLAT.
+
+    Daí a marcação ser feita contra o título, e depender da categoria:
+      - prédio/terreno/lote/armazém/loja não são habitação em nenhuma das duas;
+      - "moradia" só é contraditório num anúncio listado como apartamento.
 
     Marcamos em vez de apagar: quem analisa decide, e fica registado quanto
     ruído tinha a fonte.
     """
     titulo = df["titulo"].fillna("")
-    df["suspeito_nao_apartamento"] = (
-        titulo.str.contains(PADRAO_NAO_APARTAMENTO)
-        | ((df["tipologia"] == "T9+") & (df["area_m2"] > 250))
+    e_apartamento = df["tipo_imovel"] == "FLAT"
+
+    df["suspeito_tipo_errado"] = (
+        titulo.str.contains(PADRAO_NAO_HABITACAO)
+        # Um T9+ com área grande listado como apartamento é quase sempre um
+        # prédio inteiro; numa moradia é apenas uma moradia grande.
+        | (e_apartamento & (df["tipologia"] == "T9+") & (df["area_m2"] > 250))
+        | (e_apartamento & titulo.str.contains(PADRAO_MORADIA))
     )
     df["suspeito_arrendamento"] = titulo.str.contains(PADRAO_ARRENDAMENTO)
     return df
@@ -235,7 +242,7 @@ def marcar_suspeito(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def caminho_html(pesquisa: str, pagina: int) -> Path:
-    return RAW_DIR / f"{pesquisa}_pagina_{pagina}.html"
+    return HTML / f"{pesquisa}_pagina_{pagina}.html"
 
 
 def buscar_pagina(base_url: str, pagina: int, pesquisa: str) -> str:
@@ -296,6 +303,13 @@ def scrape_pesquisa(pesquisa: str, base_url: str, offline: bool = False) -> pd.D
                   f"{pagina_devolvida} -> fim dos resultados.")
             break
 
+        # Pesquisa sem resultados. Tem de ser testado explicitamente: com
+        # `totalPages == 0`, um teste por veracidade trata o zero como falso e
+        # o ciclo corre até ao limite de segurança a descarregar páginas vazias.
+        if not search_ads.get("items"):
+            print(f"  sem anúncios nesta zona -> nada a recolher.")
+            break
+
         novos = 0
         for item in search_ads.get("items", []):
             if item["id"] not in anuncios:
@@ -306,7 +320,7 @@ def scrape_pesquisa(pesquisa: str, base_url: str, offline: bool = False) -> pd.D
             print(f"  -> {len(search_ads.get('items', []))} anúncios "
                   f"({novos} novos, {len(anuncios)} acumulados)")
 
-        if total_paginas and pagina >= total_paginas:
+        if total_paginas is not None and pagina >= total_paginas:
             break
 
         pagina += 1
@@ -339,11 +353,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--saida", default=None,
-        help="nome do CSV combinado (por omissão imovirtual_anuncios.csv).",
+        help="nome do CSV combinado (por omissão anuncios_listagem.csv).",
     )
     args = parser.parse_args()
 
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    HTML.mkdir(parents=True, exist_ok=True)
     escolhidas = args.pesquisa or PESQUISAS_POR_OMISSAO
 
     if args.offline:
@@ -355,8 +369,6 @@ def main() -> None:
         if df.empty:
             print(f"[{pesquisa}] nada extraído — confirma o URL.\n")
             continue
-        df.to_csv(RAW_DIR / f"imovirtual_{pesquisa}.csv", index=False,
-                  encoding="utf-8")
         dfs.append(df)
         print()
 
@@ -366,17 +378,19 @@ def main() -> None:
 
     combinado = pd.concat(dfs, ignore_index=True)
     antes = len(combinado)
-    # Freguesias vizinhas partilham anúncios de fronteira; dedup final por ad_id.
+    # Um anúncio de fronteira pode surgir em mais do que uma pesquisa, e os
+    # promovidos aparecem em zonas vizinhas. Dedup final por ad_id.
     combinado = combinado.drop_duplicates(subset="ad_id", keep="first")
 
-    saida = RAW_DIR / (args.saida or "imovirtual_anuncios.csv")
+    INTERIM.mkdir(parents=True, exist_ok=True)
+    saida = INTERIM / (args.saida or "anuncios_listagem.csv")
     combinado.to_csv(saida, index=False, encoding="utf-8")
 
     print("=" * 64)
     print(f"{saida.name}: {len(combinado)} anúncios únicos "
           f"({antes - len(combinado)} repetidos entre pesquisas)")
     print(f"  com preço e área ......... {combinado[['preco_eur', 'area_m2']].notna().all(axis=1).sum()}")
-    print(f"  possíveis não-apartamentos {combinado['suspeito_nao_apartamento'].sum()}")
+    print(f"  possíveis tipo errado ..... {combinado['suspeito_tipo_errado'].sum()}")
     print(f"  possíveis arrendamentos .. {combinado['suspeito_arrendamento'].sum()}")
     print(f"  bairros distintos ........ {combinado['bairro'].nunique()}")
 

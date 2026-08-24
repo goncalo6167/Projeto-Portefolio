@@ -17,9 +17,9 @@ Anúncios que já expiraram ou dão 404 ficam registados na cache como falhados,
 para não serem repetidos em cada execução.
 
 COMO USAR:
-    python src/scraping/imovirtual_detalhes.py --limite 20   # testar
-    python src/scraping/imovirtual_detalhes.py               # recolha completa
-    python src/scraping/imovirtual_detalhes.py --juntar      # só juntar, sem pedidos
+    python -m src.scraping.imovirtual_detalhes --limite 20   # testar
+    python -m src.scraping.imovirtual_detalhes               # recolha completa
+    python -m src.scraping.imovirtual_detalhes --juntar      # só juntar, sem pedidos
 """
 
 from __future__ import annotations
@@ -34,12 +34,11 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
-PROCESSED_DIR = Path(__file__).resolve().parents[2] / "data" / "processed"
+from src.config import INTERIM, RAW
 
-ENTRADA = RAW_DIR / "imovirtual_anuncios.csv"
-CACHE = RAW_DIR / "detalhes_cache.jsonl"
-SAIDA = PROCESSED_DIR / "anuncios_coimbra.csv"
+ENTRADA = INTERIM / "anuncios_listagem.csv"
+CACHE = RAW / "detalhes_cache.jsonl"
+SAIDA = INTERIM / "anuncios_detalhe.csv"
 
 HEADERS = {
     "User-Agent": (
@@ -204,7 +203,8 @@ def buscar_detalhe(url: str, ad_id: int) -> dict:
 def recolher(limite: int | None = None) -> None:
     if not ENTRADA.exists():
         raise SystemExit(
-            f"Falta {ENTRADA.name}. Corre primeiro o imovirtual_scraper.py."
+            f"Falta {ENTRADA.name}. Corre primeiro:\n"
+            f"  python -m src.scraping.imovirtual_listagens"
         )
 
     anuncios = pd.read_csv(ENTRADA)[["ad_id", "url"]].drop_duplicates("ad_id")
@@ -255,7 +255,7 @@ def juntar() -> None:
 
     juntos = anuncios.merge(bons, on="ad_id", how="left", validate="one_to_one")
 
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    SAIDA.parent.mkdir(parents=True, exist_ok=True)
     juntos.to_csv(SAIDA, index=False, encoding="utf-8")
 
     com_coords = juntos["lat"].notna().sum()
